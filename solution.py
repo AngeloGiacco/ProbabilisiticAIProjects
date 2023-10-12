@@ -33,12 +33,13 @@ class Model(object):
         We already provide a random number generator for reproducibility.
         """
         self.rng = np.random.default_rng(seed=RANDOM_SEED)
-        self.kernel = Matern(length_scale=0.0464, nu=2.5) + WhiteKernel(noise_level=0.0119)
+        self.kernel = 0.00316**2 * RBF(length_scale=2.83e-14) + 0.916**2 * Matern(length_scale=0.0512, nu=1.5) + WhiteKernel(noise_level=1e-10)
+
         self.gp = GaussianProcessRegressor(kernel=self.kernel,
                                            normalize_y=True,
                                            n_restarts_optimizer=5,
                                            copy_X_train=False,
-                                           random_state=22)
+                                           random_state=RANDOM_SEED)
 
         # TODO: Add custom initialization for your model here if necessary
 
@@ -53,7 +54,11 @@ class Model(object):
         """
 
         gp_mean, gp_std = self.gp.predict(test_x_2D, return_std=True)
-        return gp_mean, gp_mean, gp_std
+
+        updated_mean = asymmetric_means(gp_mean, gp_std, test_x_AREA)
+
+        return updated_mean, gp_mean, gp_std
+
 
     def fitting_model(self, train_y: np.ndarray,train_x_2D: np.ndarray):
         """
@@ -169,6 +174,13 @@ def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
 
     plt.show()
 
+def asymmetric_means(mu, sigma, area_flags):
+
+    updated_mu = np.where(area_flags, mu + sigma, mu)
+
+    return updated_mu
+
+
 def reduce_sample_size_kmeans(train_x, train_y, new_sample_size):
     """
     Reduces the sample size via k-means clustering.
@@ -238,6 +250,11 @@ def main():
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
+
+
+if __name__ == "__main__":
+    main()
+
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ import typing
 import warnings
 
 import numpy as np
-import math
 import torch
 import torch.optim
 import torch.utils.data
@@ -115,7 +114,7 @@ class SWAGInference(object):
         model_dir: pathlib.Path,
         # TODO(1): change inference_mode to InferenceMode.SWAG_DIAGONAL
         # TODO(2): change inference_mode to InferenceMode.SWAG_FULL
-        inference_mode: InferenceMode = InferenceMode.SWAG_DIAGONAL,
+        inference_mode: InferenceMode = InferenceMode.SWAG_FULL,
         # TODO(2): optionally add/tweak hyperparameters
         swag_epochs: int = 30,
         swag_learning_rate: float = 0.045,
@@ -175,12 +174,10 @@ class SWAGInference(object):
         # Create a copy of the current network weights
         current_params = {name: param.detach() for name, param in self.network.named_parameters()}
 
-        n = math.floor(self.swag_epochs / self.swag_update_freq)
-
         # SWAG-diagonal
         for name, param in current_params.items():
-            self.theta_swa[name] += param / n
-            self.theta_squared[name] += param ** 2 / n
+            self.theta_swa[name] += param / self.swag_epochs
+            self.theta_squared[name] += param ** 2 / self.swag_epochs
             # TODO(1): update SWAG-diagonal attributes for weight `name` using `current_params` and `param`
 
         # Full SWAG
@@ -190,6 +187,7 @@ class SWAGInference(object):
                 current_thetai_minus_theta = {name: param - self.theta_swa[name] for name, param in current_params}
                 self.d.popleft()
                 self.d.append(current_thetai_minus_theta)
+
 
     def fit_swag(self, loader: torch.utils.data.DataLoader) -> None:
         """
@@ -322,7 +320,6 @@ class SWAGInference(object):
 
         # Instead of acting on a full vector of parameters, all operations can be done on per-layer parameters.
         for name, param in self.network.named_parameters():
-            print("name: "+name + " param: "+ param)
             # SWAG-diagonal part
             z_1 = torch.randn(param.size())
             # TODO(1): Sample parameter values for SWAG-diagonal
@@ -336,8 +333,9 @@ class SWAGInference(object):
             # Full SWAG part
             if self.inference_mode == InferenceMode.SWAG_FULL:
                 # TODO(2): Sample parameter values for full SWAG
-                #z_2 = torch.randn(deviation_matrix_max_rank)
-                #sampled_param = current_mean + (1 / torch.sqrt(2)) * torch.sqrt(current_std) * z_1 + (1 / torch.sqrt(2 * (deviation_matrix_max_rank - 1)))
+                z_2 = torch.randn(deviation_matrix_max_rank)
+                d_hat = [d[name] for d in self.d]
+                sampled_param = current_mean + (1 / torch.sqrt(2)) * torch.sqrt(current_std) * z_1 + (1 / torch.sqrt(2 * (deviation_matrix_max_rank - 1))) * d_hat * z_2
 
             # Modify weight value in-place; directly changing self.network
             param.data = sampled_param
@@ -790,4 +788,3 @@ class CNN(torch.nn.Module):
 
 if __name__ == "__main__":
     main()
-

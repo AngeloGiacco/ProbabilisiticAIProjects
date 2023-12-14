@@ -136,8 +136,8 @@ class Value:
     def setup_value(self):
         self.network = NeuralNetwork(self.state_dim, 1, self.hidden_size, self.hidden_layers)
         self.value_target_net = NeuralNetwork(self.state_dim, 1, self.hidden_size, self.hidden_layers)
-        self.value_target_net.load_state_dict(self.value_net.state_dict())
-        self.optimizer = optim.Adam(self.value_net.parameters(), lr=self.value_lr)
+        self.value_target_net.load_state_dict(self.network.state_dict())
+        self.optimizer = optim.Adam(self.network.parameters(), lr=self.value_lr)
 
     def set_target(self, new_value_target_net):
         self.value_target_net = new_value_target_net
@@ -283,10 +283,10 @@ class Agent:
             loss = criterion(prediction, target_q.detach())
             self.run_gradient_update_step(critic, loss)
 
-        policy_loss = log_prob.clone() - min_q.clone()
-        self.run_gradient_update_step(self.actor, policy_loss)
+        #policy_loss = log_prob.clone() - min_q.clone() #TODO fix problematic code 
+        #self.run_gradient_update_step(self.actor, policy_loss)
 
-        value_net = self.value.value_net
+        value_net = self.value.network
         target_net = self.value.value_target_net
 
         soft_update = True
@@ -332,4 +332,5 @@ if __name__ == '__main__':
 
     if save_video:
         video_rec.close()
+
 

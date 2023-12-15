@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 from torch.distributions import Normal
+import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
@@ -11,8 +12,6 @@ from utils import ReplayBuffer, get_env, run_episode
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-INIT = 0.005
-
 
 class NeuralNetwork(nn.Module):
     '''
@@ -21,20 +20,24 @@ class NeuralNetwork(nn.Module):
     '''
 
     def __init__(self, input_dim: int, output_dim: int, hidden_size: int,
-                 hidden_layers: int, activation: str = 'relu'):
+                 hidden_layers: int, activation: str = 'ReLU'):
         super(NeuralNetwork, self).__init__()
 
+        if activation == "Sigmoid":
+            self.activation = nn.Sigmoid()
+        elif activation == "Tanh":
+            self.activation = nn.Tanh()
+        else:
+            self.activation = nn.ReLU()
+        
         layers = []
+        
+        # The first layer we add is the from input, the rest is with hidden_size
         num_inputs = input_dim
-
-        # Add hidden layers
         for _ in range(hidden_layers):
-            linLayer = nn.Linear(num_inputs, hidden_size)
-            linLayer.weight.data.uniform_(-INIT, INIT)
-            linLayer.bias.data.uniform_(-INIT, INIT)
             layers.extend([
                 nn.Linear(num_inputs, hidden_size),
-                nn.ReLU() if activation == 'relu' else nn.Sigmoid()
+                self.activation
             ])
             num_inputs = hidden_size
         layers.append(nn.Linear(num_inputs, output_dim))
@@ -62,10 +65,13 @@ class Actor:
         '''
         This function sets up the actor network in the Actor class.
         '''
-        self.network = NeuralNetwork(self.state_dim, 2, self.hidden_size, self.hidden_layers, 'relu')
+        self.network = NeuralNetwork(self.state_dim, 2 * self.action_dim, self.hidden_size, self.hidden_layers, 'relu')
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.actor_lr)
 
     def forward(self, state):
+        '''
+        This function runs the neural network above and extracts the mean and clamped log_std
+        '''
         result = self.network.forward(state)
         mean, log_std = result.split(1, dim=-1)
         return mean, self.clamp_log_std(log_std)
@@ -88,15 +94,22 @@ class Actor:
         action: torch.Tensor, action the policy returns for the state.
         log_prob: log_probability of the action.
         '''
+        
         assert state.shape == (3,) or state.shape[1] == self.state_dim, 'State passed to this method has a wrong shape'
         # If working with stochastic policies, make sure that its log_std are clamped
         # using the clamp_log_std function.
         action_mean, clamped_log_std = self.forward(state)
         z = torch.randn_like(action_mean)
         std = torch.exp(clamped_log_std)
-        action = torch.tanh(action_mean) if deterministic else torch.tanh(action_mean + std * z)
-        log_prob = Normal(action_mean, std).log_prob(action) - torch.log(1 - action.pow(2) + 1e-6)
+        
+        random_action = action_mean + std * z
+        # TODO, we have the formual form. 
+        log_prob = random_action - (2 * (np.log(2) - random_action - F.softplus(-2 * random_action)))
+        
+        action = torch.tanh(action_mean) if deterministic else torch.tanh(random_action)
+        #log_prob = Normal(action_mean, std).log_prob(action) - torch.log(1 - action.pow(2) + 1e-6)
 
+        log_prob = torch.as_tensor([1]) if deterministic else log_prob
         assert action.shape == (self.action_dim,) and \
                log_prob.shape == (self.action_dim,) or action.shape == (state.shape[0], 1) \
                and log_prob.shape == (state.shape[0], 1),  'Incorrect shape for action or log_prob.'
@@ -116,11 +129,11 @@ class Critic:
         self.setup_critic()
 
     def setup_critic(self):
-        self.network = NeuralNetwork(self.state_dim + self.action_dim, 1, self.hidden_size, self.hidden_layers)
+        self.network = NeuralNetwork(self.state_dim + self.action_dim, self.action_dim, self.hidden_size, self.hidden_layers)
         self.optimizer = optim.Adam(self.network.parameters(), lr=self.critic_lr)
 
-    def forward(self, state_action_batch):
-        return self.network.forward(state_action_batch)
+    def forward(self, state_action):
+        return self.network.forward(state_action)
 
 class Value:
     def __init__(self, hidden_size: int,
@@ -158,6 +171,7 @@ class TrainableParameter:
                  train_param: bool, device: torch.device = torch.device('cpu')):
         self.log_param = torch.tensor(np.log(init_param), requires_grad=train_param, device=device)
         self.optimizer = optim.Adam([self.log_param], lr=lr_param)
+        self.loss = torch.as_tensor([0])
 
     def get_param(self) -> torch.Tensor:
         return torch.exp(self.log_param)
@@ -165,9 +179,10 @@ class TrainableParameter:
     def get_log_param(self) -> torch.Tensor:
         return self.log_param
 
-    def update_param(self):
+    # Something that is like run_gradient_update_step for Agent
+    def update_param(self, loss):
         self.optimizer.zero_grad()
-        self.log_param.backward()
+        loss.backward()
         self.optimizer.step()
 
 class Agent:
@@ -188,19 +203,26 @@ class Agent:
 
     def setup_agent(self):
         # Feel free to instantiate any other parameters you feel you might need.
-        self.actor = Actor(20, 3, 0.005)
-        self.value = Value(20, 3, 0.005)
-        self.critics = [Critic(20, 3, 0.0005),Critic(20, 3, 0.005)]
+        self.hidden_layers = 128 #128
+        self.hidden_size = 3 #3
+        self.lr = 0.001 #0.001
+        self.actor = Actor(self.hidden_layers, self.hidden_size, self.lr)
+        self.value = Value(self.hidden_layers, self.hidden_size, self.lr)
+        self.critics = [Critic(self.hidden_layers, self.hidden_size, self.lr),
+                        Critic(self.hidden_layers, self.hidden_size, self.lr)]
         self.mse_criterion = nn.MSELoss()
-        self.tau = 0.2
-        self.gamma = 0.95
-        initial_temperature = 0.25
-        temperature_learning_rate = 1e-4
+
+        
+        self.tau = 0.01 # 0.01 / 0.005
+        self.gamma = 0.98 # 0.98 / 0.99
+        initial_temperature = 0.25 #0.25
+        temperature_learning_rate = 0.0005 # 0.0005
         self.temperature_parameter = TrainableParameter(
             init_param=initial_temperature,
             lr_param=temperature_learning_rate,
             train_param=True
         )
+        self.entropy = 1
 
     def get_action(self, s: np.ndarray, train: bool) -> np.ndarray:
         """
@@ -209,7 +231,6 @@ class Agent:
                     You can find it useful if you want to sample from deterministic policy.
         :return: np.ndarray, action to apply on the environment, shape (1,)
         """
-
         state = torch.as_tensor(s, dtype=torch.float32).to(self.device)
         determinstic_sampling_flag = not train
         action, _ = self.actor.get_action_and_log_prob(state, determinstic_sampling_flag)
@@ -265,6 +286,9 @@ class Agent:
         
         state_action_batch = torch.cat([s_batch, a_batch], dim=1)
         
+        temperature = self.temperature_parameter.get_param()
+        
+        # Get values from neural networks
         predicted_value = self.value.forward(s_batch)
         predict_critic_0 = self.critics[0].forward(state_action_batch)
         predict_critic_1 = self.critics[1].forward(state_action_batch)
@@ -273,7 +297,6 @@ class Agent:
         
         
         # Training the critic functions
-        
         target_v = self.value.value_target_net(s_prime_batch)
         target_q = r_batch + self.gamma * target_v
         criterion = nn.MSELoss()
@@ -289,23 +312,27 @@ class Agent:
         state_action_batch = torch.cat([s_batch, guessed_action], dim=1)
         q_predictions = [critic.forward(state_action_batch) for critic in self.critics]
         min_q = torch.min(q_predictions[0], q_predictions[1])
-        target_v = min_q - log_prob
+        target_v = min_q - temperature * log_prob
         value_loss = self.mse_criterion(predicted_value, target_v.detach())
         self.run_gradient_update_step(self.value, value_loss)
          
         
        # Training Agent
-        agent_loss = (log_prob - min_q).mean()
-           
-        self.run_gradient_update_step(self.actor, agent_loss)
-        
-        
+        actor_loss = torch.mean(temperature * log_prob - min_q)
+        self.run_gradient_update_step(self.actor, actor_loss)
+
         value_net = self.value.network
         target_net = self.value.value_target_net
 
         soft_update = True
         self.critic_target_update(value_net, target_net, self.tau, soft_update)
-
+        
+        # Update temperature parameters TODO
+        log_prob_clone = log_prob.clone().detach()
+        loss = torch.mean(temperature * self.entropy - temperature * log_prob_clone)
+        self.temperature_parameter.update_param(loss)
+        
+        
 
 # This main function is provided here to enable some basic testing. 
 # ANY changes here WON'T take any effect while grading.

@@ -1,3 +1,7 @@
-# ProbabilisiticAI Task0
+# ProbabilisiticAI Projects
 
-Hi, if you experiment with something please push it to your personal branch, that way we can experiment individually and collaborate more easily :)
+Projects undertaken at ETH Zurich for the Probabilistic AI course.
+
+All projects scored the highest mark.
+
+TODO: reorganise with write-ups
